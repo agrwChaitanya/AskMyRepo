@@ -2,32 +2,37 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+ 
 from git import Repo
 import chromadb
 from llama_index.core import Settings, SimpleDirectoryReader, StorageContext, VectorStoreIndex
+from llama_index.core.node_parser import CodeSplitter, SentenceSplitter
+from llama_index.core.schema import MetadataMode
+from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from model_provider import get_llm_and_embeddings
-
-# Common directories and files to exclude during repository parsing
+ 
+# Directories never worth indexing (hidden dirs are skipped too)
 EXCLUDED_DIRS = {
-    ".git",
-    "node_modules",
-    "venv",
-    ".venv",
-    "env",
-    "__pycache__",
-    "dist",
-    "build",
-    ".idea",
-    ".vscode",
+    "node_modules", "venv", ".venv", "env", "__pycache__",
+    "dist", "build", "site-packages", "vendor", "target",
 }
-
-EXCLUDED_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf",
-    ".zip", ".tar", ".gz", ".rar", ".exe", ".dll", ".so", ".dylib",
-    ".pyc", ".lock", ".ipynb"
+ 
+# Extensions we parse with a language-aware splitter (tree-sitter language names)
+CODE_EXTS = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".java": "java", ".go": "go", ".rs": "rust", ".cpp": "cpp", ".c": "c",
 }
-
+# Other text files worth indexing (docs, config, frontend, scripts)
+TEXT_EXTS = {
+    ".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
+    ".html", ".css", ".sh", ".tsx", ".jsx", ".sql",
+}
+ALLOWED_EXTS = set(CODE_EXTS) | TEXT_EXTS
+SKIP_FILES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock"}
+MAX_FILE_BYTES = 200_000  # skip huge generated / data files
+ 
+ 
 def clone_repo(repo_url: str, target_dir: str) -> str:
     """Clones a public GitHub repository to the target directory."""
     if os.path.exists(target_dir):
@@ -38,75 +43,135 @@ def clone_repo(repo_url: str, target_dir: str) -> str:
         return target_dir
     except Exception as e:
         raise RuntimeError(f"Failed to clone repository {repo_url}: {e}")
-
+ 
+ 
 def setup_llamaindex_settings():
     """Configures global LlamaIndex settings with server-configured LLM and Embeddings."""
     llm, embed_model = get_llm_and_embeddings()
-    
+ 
     Settings.llm = llm
     Settings.embed_model = embed_model
     Settings.chunk_size = 1024
     Settings.chunk_overlap = 200
-
-def index_repository(repo_url: str, persist_dir: str = "./chroma_db") -> VectorStoreIndex:
-    """Clones a repository, reads its code files, and indexes them into ChromaDB using LlamaIndex."""
+ 
+ 
+def collect_files(root: str) -> list[str]:
+    """Walks the repo, pruning excluded dirs BEFORE reading anything."""
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS and not d.startswith(".")]
+        for name in filenames:
+            path = Path(dirpath) / name
+            if name in SKIP_FILES or path.suffix.lower() not in ALLOWED_EXTS:
+                continue
+            if path.stat().st_size > MAX_FILE_BYTES:
+                continue
+            files.append(str(path))
+    return files
+ 
+ 
+def make_metadata_fn(root: str):
+    """Metadata with repo-relative paths (not temp-dir paths)."""
+    def fn(path: str) -> dict:
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        ext = Path(rel).suffix.lower()
+        return {
+            "file_path": rel,
+            "file_name": os.path.basename(rel),
+            "language": CODE_EXTS.get(ext, "text"),
+        }
+    return fn
+ 
+ 
+def _annotate(doc, nodes):
+    """Adds line ranges to chunks and keeps noisy metadata out of the embedding text."""
+    text = doc.text
+    is_md = doc.metadata["file_path"].lower().endswith(".md")  # md readers split docs, so lines would be wrong
+    for n in nodes:
+        n.excluded_embed_metadata_keys = ["file_name", "start_line", "end_line"]
+        n.excluded_llm_metadata_keys = ["file_name"]
+        if is_md:
+            continue
+        chunk = n.get_content(metadata_mode=MetadataMode.NONE)
+        start = text.find(chunk)
+        if start < 0:
+            continue
+        n.metadata["start_line"] = text.count("\n", 0, start) + 1
+        n.metadata["end_line"] = n.metadata["start_line"] + chunk.count("\n")
+ 
+ 
+def build_nodes(documents, chunking: str = "code"):
+    """chunking='default' -> plain sentence splitter (baseline).
+    chunking='code'    -> tree-sitter splitter for known languages, sentence splitter for the rest."""
+    if chunking not in ("default", "code"):
+        raise ValueError("chunking must be 'default' or 'code'")
+ 
+    default_splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=200)
+    code_splitters = {}
+    if chunking == "code":
+        # Built up front so a missing tree-sitter install fails loudly instead of silently
+        # falling back to the baseline (which would make your eval numbers meaningless).
+        code_splitters = {
+            lang: CodeSplitter(language=lang, chunk_lines=40, chunk_lines_overlap=10, max_chars=1500)
+            for lang in set(CODE_EXTS.values())
+        }
+ 
+    nodes, fallbacks = [], 0
+    for doc in documents:
+        ext = Path(doc.metadata["file_path"]).suffix.lower()
+        splitter = code_splitters.get(CODE_EXTS.get(ext))
+        try:
+            doc_nodes = (splitter or default_splitter).get_nodes_from_documents([doc])
+        except Exception:  # e.g. a file with a syntax error
+            doc_nodes = default_splitter.get_nodes_from_documents([doc])
+            fallbacks += 1
+        _annotate(doc, doc_nodes)
+        nodes.extend(doc_nodes)
+ 
+    print(f"Built {len(nodes)} chunks from {len(documents)} documents "
+          f"(chunking={chunking}, parse fallbacks={fallbacks}).")
+    return nodes
+ 
+ 
+def index_repository(repo_url: str, persist_dir: str = "./chroma_db", chunking: str = "code") -> VectorStoreIndex:
+    """Clones a repo, chunks it, embeds into ChromaDB, and saves a docstore (needed for BM25)."""
     setup_llamaindex_settings()
-    
-    # Clear existing vector store database if it exists to ensure old repo data is deleted and replaced
+ 
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir, ignore_errors=True)
     os.makedirs(persist_dir, exist_ok=True)
-    
-    # Create temp directory for cloning
+ 
     temp_clone_dir = tempfile.mkdtemp(prefix="github_repo_")
     try:
         print(f"Cloning {repo_url} into {temp_clone_dir}...")
         clone_repo(repo_url, temp_clone_dir)
-        
-        print("Reading repository files...")
+ 
+        files = collect_files(temp_clone_dir)
+        if not files:
+            raise RuntimeError("No indexable files found in this repository.")
+ 
+        print(f"Reading {len(files)} files...")
         reader = SimpleDirectoryReader(
-            input_dir=temp_clone_dir,
-            recursive=True,
-            exclude_hidden=True,
-            required_exts=None
+            input_files=files,
+            file_metadata=make_metadata_fn(temp_clone_dir),
         )
-        
         documents = reader.load_data()
-        
-        # Filter out documents from excluded directories or binary extensions
-        filtered_docs = []
-        for doc in documents:
-            file_path = doc.metadata.get("file_path", "")
-            path_parts = Path(file_path).parts
-            
-            # Check if any excluded directory is in the path parts
-            if any(exc in path_parts for exc in EXCLUDED_DIRS):
-                continue
-            
-            # Check extension
-            if Path(file_path).suffix.lower() in EXCLUDED_EXTENSIONS:
-                continue
-                
-            filtered_docs.append(doc)
-            
-        print(f"Indexed {len(filtered_docs)} document chunks from repository.")
-        
-        # Initialize Chroma client and collection
+        nodes = build_nodes(documents, chunking=chunking)
+ 
         db = chromadb.PersistentClient(path=persist_dir)
         chroma_collection = db.get_or_create_collection("github_repo_qa")
-        
-        # Assign Chroma as Vector Store
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        
-        # Create index
-        index = VectorStoreIndex.from_documents(
-            filtered_docs, storage_context=storage_context
-        )
-        
+ 
+        # Chroma stores text, so LlamaIndex won't fill the docstore by itself.
+        # We keep our own copy so BM25 can be rebuilt from the saved chunks.
+        docstore = SimpleDocumentStore()
+        docstore.add_documents(nodes)
+        storage_context = StorageContext.from_defaults(vector_store=vector_store, docstore=docstore)
+ 
+        index = VectorStoreIndex(nodes=nodes, storage_context=storage_context, show_progress=True)
+        docstore.persist(os.path.join(persist_dir, "docstore.json"))
         return index
-        
+ 
     finally:
-        # Cleanup cloned temporary directory
         if os.path.exists(temp_clone_dir):
             shutil.rmtree(temp_clone_dir, ignore_errors=True)

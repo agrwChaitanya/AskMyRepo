@@ -1,0 +1,75 @@
+
+[
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Where is the main Serializer class implemented, and which methods create and recover serialized values?",
+    "expected_files": ["src/itsdangerous/serializer.py"],
+    "type": "locate"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How does the Signer class create and verify signatures for values?",
+    "expected_files": ["src/itsdangerous/signer.py"],
+    "type": "explain"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How does TimedSerializer add timestamp-based expiration checks to serialized values?",
+    "expected_files": ["src/itsdangerous/timed.py", "src/itsdangerous/serializer.py"],
+    "type": "explain"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Where is URLSafeTimedSerializer implemented, and how does it combine URL-safe encoding with timestamp validation?",
+    "expected_files": ["src/itsdangerous/url_safe.py", "src/itsdangerous/timed.py"],
+    "type": "explain"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Which exception is raised when a signed value fails signature verification, and where is it defined?",
+    "expected_files": ["src/itsdangerous/exc.py", "src/itsdangerous/signer.py"],
+    "type": "locate"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How can a caller detect that a timed token has expired when loading it?",
+    "expected_files": ["src/itsdangerous/timed.py", "src/itsdangerous/exc.py"],
+    "type": "how-to"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How does URL-safe serialization handle values that need compression before encoding?",
+    "expected_files": ["src/itsdangerous/url_safe.py"],
+    "type": "explain"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Where do the tests verify that serializer dumps and loads preserve values?",
+    "expected_files": ["tests/test_itsdangerous/test_serializer.py"],
+    "type": "locate"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Which tests cover timestamp validation and loading values with age limits?",
+    "expected_files": ["tests/test_itsdangerous/test_timed.py"],
+    "type": "locate"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How do URL-safe serializer tests check handling of serialized values, including large values?",
+    "expected_files": ["tests/test_itsdangerous/test_url_safe.py", "tests/test_itsdangerous/test_serializer.py"],
+    "type": "explain"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "Trace how a URL-safe timed token is serialized, signed, loaded, and checked for expiration across the implementation.",
+    "expected_files": ["src/itsdangerous/url_safe.py", "src/itsdangerous/timed.py", "src/itsdangerous/serializer.py", "src/itsdangerous/signer.py"],
+    "type": "multi-hop"
+  },
+  {
+    "repo_url": "https://github.com/pallets/itsdangerous",
+    "question": "How do the implementation and tests distinguish an invalid signature from an expired token?",
+    "expected_files": ["src/itsdangerous/exc.py", "src/itsdangerous/signer.py", "src/itsdangerous/timed.py", "tests/test_itsdangerous/test_timed.py"],
+    "type": "multi-hop"
+  }
+]

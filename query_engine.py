@@ -1,34 +1,12 @@
-import chromadb
-from llama_index.core import StorageContext, VectorStoreIndex
+from llama_index.core import PromptTemplate
 from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.response_synthesizers import get_response_synthesizer
-from llama_index.vector_stores.chroma import ChromaVectorStore
-from indexer import setup_llamaindex_settings
 
-def get_query_engine(persist_dir: str = "./chroma_db"):
-    """Loads the ChromaDB vector store and returns a LlamaIndex query engine configured for GitHub repo Q&A."""
-    setup_llamaindex_settings()
-    
-    try:
-        db = chromadb.PersistentClient(path=persist_dir)
-        chroma_collection = db.get_or_create_collection("github_repo_qa")
-        
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-        
-        index = VectorStoreIndex.from_vector_store(
-            vector_store=vector_store
-        )
-        
-        # Configure retriever (top 5 relevant chunks)
-        retriever = VectorIndexRetriever(
-            index=index,
-            similarity_top_k=5,
-        )
-        
-        # Configure response synthesizer with custom prompt
-        text_qa_template_str = (
-            "You are an expert GitHub repository assistant. Use the provided context to answer the user's question.\n\n"
+from indexer import setup_llamaindex_settings
+from retrieval import build_retriever, load_index_and_nodes
+
+TEXT_QA_TEMPLATE = (
+    "You are an expert GitHub repository assistant. Use the provided context to answer the user's question.\n\n"
     "Guidelines:\n"
     "- Match the structure and depth of your answer directly to the user's query.\n"
     "- For simple or conceptual questions, provide a clear, conversational explanation without forcing unnecessary sections.\n"
@@ -38,22 +16,26 @@ def get_query_engine(persist_dir: str = "./chroma_db"):
     "{context_str}\n\n"
     "Question: {query_str}\n"
     "Answer: "
-        )
-        
-        from llama_index.core import PromptTemplate
-        qa_prompt = PromptTemplate(text_qa_template_str)
-        
+)
+
+
+def get_query_engine(persist_dir: str = "./chroma_db", mode: str = "hybrid_rerank", top_k: int = 5):
+    """Loads the saved index and returns a query engine using the chosen retrieval mode."""
+    setup_llamaindex_settings()
+
+    try:
+        index, nodes = load_index_and_nodes(persist_dir)
+        retriever, postprocessors = build_retriever(index, nodes, mode=mode, top_k=top_k)
+
         response_synthesizer = get_response_synthesizer(
             response_mode="compact",
-            text_qa_template=qa_prompt
+            text_qa_template=PromptTemplate(TEXT_QA_TEMPLATE),
         )
-        
-        query_engine = RetrieverQueryEngine(
+
+        return RetrieverQueryEngine(
             retriever=retriever,
             response_synthesizer=response_synthesizer,
+            node_postprocessors=postprocessors,
         )
-        
-        return query_engine
-        
     except Exception as e:
-        raise RuntimeError(f"Failed to load query engine from ChromaDB: {e}")
+        raise RuntimeError(f"Failed to load query engine: {e}")

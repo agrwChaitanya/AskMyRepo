@@ -5,6 +5,10 @@ from indexer import index_repository
 from query_engine import get_query_engine
 from config import Config
 
+@st.cache_resource(show_spinner=False)
+def load_engine(persist_dir):
+    return get_query_engine(persist_dir=persist_dir)
+
 load_dotenv()
 
 st.set_page_config(
@@ -37,6 +41,7 @@ if st.sidebar.button("🚀 Clone & Index Repository", type="primary"):
                 # Validate server configuration before indexing
                 Config.validate()
                 index_repository(repo_url, persist_dir=persist_dir)
+                st.cache_resource.clear()
                 st.sidebar.success("Repository successfully indexed!")
                 st.session_state["indexed"] = True
                 st.session_state["messages"] = []
@@ -74,7 +79,7 @@ else:
             with st.chat_message("assistant"):
                 with st.spinner("Analyzing repository code..."):
                     try:
-                        query_engine = get_query_engine(persist_dir=persist_dir)
+                        query_engine = load_engine(persist_dir)
                         response = query_engine.query(prompt)
                         
                         response_text = str(response)
