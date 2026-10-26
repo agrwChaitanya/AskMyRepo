@@ -25,7 +25,7 @@ def get_query_engine(persist_dir: str = "./chroma_db", mode: str = "hybrid_reran
 
     try:
         index, nodes = load_index_and_nodes(persist_dir)
-        retriever, postprocessors = build_retriever(index, nodes, mode=mode, top_k=top_k)
+        retriever, postprocessors = build_retriever(index, nodes, mode=mode, top_k=top_k, persist_dir=persist_dir)
 
         response_synthesizer = get_response_synthesizer(
             response_mode="compact",

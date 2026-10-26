@@ -22,7 +22,7 @@ def load_index_and_nodes(persist_dir: str):
     return index, nodes
 
 
-def build_retriever(index, nodes, mode: str = "hybrid_rerank", top_k: int = 5, candidates: int = 20):
+def build_retriever(index, nodes, mode: str = "hybrid_rerank", top_k: int = 5, candidates: int = 20, persist_dir: str = "./chroma_db"):
     """Returns (retriever, postprocessors).
 
     vector         : dense embeddings only (your original behaviour)
@@ -38,7 +38,12 @@ def build_retriever(index, nodes, mode: str = "hybrid_rerank", top_k: int = 5, c
         return VectorIndexRetriever(index=index, similarity_top_k=top_k), []
 
     vector = VectorIndexRetriever(index=index, similarity_top_k=candidates)
-    bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=candidates)
+    
+    try:
+        bm25 = BM25Retriever.from_persist_dir(persist_dir)
+        bm25.similarity_top_k = candidates
+    except Exception:
+        bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=candidates)
 
     rerank = mode == "hybrid_rerank"
     fusion = QueryFusionRetriever(

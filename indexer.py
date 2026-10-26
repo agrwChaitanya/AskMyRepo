@@ -1,6 +1,8 @@
 import os
 import shutil
 import tempfile
+import json
+from datetime import datetime
 from pathlib import Path
  
 from git import Repo
@@ -170,6 +172,44 @@ def index_repository(repo_url: str, persist_dir: str = "./chroma_db", chunking: 
  
         index = VectorStoreIndex(nodes=nodes, storage_context=storage_context, show_progress=True)
         docstore.persist(os.path.join(persist_dir, "docstore.json"))
+
+        # Build and persist BM25 retriever for instant hybrid search loading
+        from llama_index.retrievers.bm25 import BM25Retriever
+        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes)
+        bm25_retriever.persist(persist_dir)
+
+        # Extract and persist repository metadata
+        parts = repo_url.rstrip("/").split("/")
+        owner = parts[-2] if len(parts) >= 2 else "Unknown"
+        repo_name = parts[-1].replace(".git", "") if len(parts) >= 1 else "Unknown"
+
+        created_date = "Unknown"
+        latest_commit = "Unknown"
+        try:
+            repo = Repo(temp_clone_dir)
+            commits = list(repo.iter_commits(max_count=2000))
+            if commits:
+                oldest = commits[-1]
+                created_date = datetime.fromtimestamp(oldest.committed_date).strftime("%Y-%m-%d")
+                latest = commits[0]
+                latest_commit = datetime.fromtimestamp(latest.committed_date).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+
+        languages = set(doc.metadata.get("language") for doc in documents if doc.metadata.get("language"))
+
+        repo_info = {
+            "repo_url": repo_url,
+            "owner": owner,
+            "repo_name": repo_name,
+            "created_date": created_date,
+            "latest_commit": latest_commit,
+            "files_indexed": len(files),
+            "languages": sorted(list(languages)),
+        }
+        with open(os.path.join(persist_dir, "repo_info.json"), "w", encoding="utf-8") as f:
+            json.dump(repo_info, f, indent=2)
+
         return index
  
     finally:

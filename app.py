@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 from dotenv import load_dotenv
 from indexer import index_repository
@@ -48,15 +49,48 @@ if st.sidebar.button("🚀 Clone & Index Repository", type="primary"):
             except Exception as e:
                 st.sidebar.error(f"Error indexing repository: {e}")
 
-# Check if index exists or was created in session
-index_exists = os.path.exists(persist_dir) and len(os.listdir(persist_dir)) > 0
+# Initialize session state for indexed state (default to False on fresh launch)
 if "indexed" not in st.session_state:
-    st.session_state["indexed"] = index_exists
+    st.session_state["indexed"] = False
+
+# Sidebar utilities for managing previous index
+has_saved_index = os.path.exists(persist_dir) and len(os.listdir(persist_dir)) > 0
+if has_saved_index and not st.session_state["indexed"]:
+    st.sidebar.divider()
+    if st.sidebar.button("📂 Load Previous Index"):
+        st.session_state["indexed"] = True
+        st.rerun()
+
+if st.session_state["indexed"]:
+    st.sidebar.divider()
+    if st.sidebar.button("🗑️ Reset / Clear Repository"):
+        if os.path.exists(persist_dir):
+            shutil.rmtree(persist_dir, ignore_errors=True)
+        st.session_state["indexed"] = False
+        st.session_state["messages"] = []
+        st.cache_resource.clear()
+        st.rerun()
 
 # Main Chat Interface
 if not st.session_state["indexed"]:
     st.info("👈 Please enter a GitHub Repository URL in the sidebar, then click **Clone & Index Repository** to get started.")
 else:
+    # Display Repository Metadata Header
+    repo_info_path = os.path.join(persist_dir, "repo_info.json")
+    if os.path.exists(repo_info_path):
+        try:
+            with open(repo_info_path, "r", encoding="utf-8") as f:
+                repo_info = json.load(f)
+            st.markdown(f"""
+            <div style="padding: 1rem; border-radius: 0.5rem; background-color: #f0f2f6; margin-bottom: 1rem; border: 1px solid #d1d5db;">
+                <h3 style="margin-top: 0; color: #1f2937;">📂 <a href="{repo_info.get('repo_url')}" target="_blank" style="text-decoration: none; color: #2563eb;">{repo_info.get('owner')}/{repo_info.get('repo_name')}</a></h3>
+                <p style="margin: 0.25rem 0; color: #4b5563;"><b>Owner/Organization:</b> {repo_info.get('owner')} | <b>Created (First Commit):</b> {repo_info.get('created_date')} | <b>Latest Commit:</b> {repo_info.get('latest_commit')}</p>
+                <p style="margin: 0.25rem 0; color: #4b5563;"><b>Files Indexed:</b> {repo_info.get('files_indexed')} | <b>Languages:</b> {', '.join(repo_info.get('languages', []))}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception:
+            pass
+
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
