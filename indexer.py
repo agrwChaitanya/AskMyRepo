@@ -38,7 +38,7 @@ MAX_FILE_BYTES = 200_000  # skip huge generated / data files
 def clone_repo(repo_url: str, target_dir: str) -> str:
     """Clones a public GitHub repository to the target directory."""
     if os.path.exists(target_dir):
-        shutil.rmtree(target_dir)
+        shutil.rmtree(target_dir, ignore_errors=True)
     os.makedirs(target_dir, exist_ok=True)
     try:
         Repo.clone_from(repo_url, target_dir, depth=1)
