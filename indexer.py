@@ -185,8 +185,10 @@ def index_repository(repo_url: str, persist_dir: str = "./chroma_db", chunking: 
 
         created_date = "Unknown"
         latest_commit = "Unknown"
+        commit_sha = "main"
         try:
             repo = Repo(temp_clone_dir)
+            commit_sha = repo.head.commit.hexsha
             commits = list(repo.iter_commits(max_count=2000))
             if commits:
                 oldest = commits[-1]
@@ -204,6 +206,7 @@ def index_repository(repo_url: str, persist_dir: str = "./chroma_db", chunking: 
             "repo_name": repo_name,
             "created_date": created_date,
             "latest_commit": latest_commit,
+            "commit_sha": commit_sha,
             "files_indexed": len(files),
             "languages": sorted(list(languages)),
         }

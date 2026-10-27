@@ -7,8 +7,8 @@ from query_engine import get_query_engine
 from config import Config
 
 @st.cache_resource(show_spinner=False)
-def load_engine(persist_dir):
-    return get_query_engine(persist_dir=persist_dir)
+def load_engine(persist_dir, mode="hybrid_rerank"):
+    return get_query_engine(persist_dir=persist_dir, mode=mode)
 
 load_dotenv()
 
@@ -29,6 +29,17 @@ repo_url = st.sidebar.text_input(
     value="https://github.com/octocat/Hello-World",
     placeholder="https://github.com/owner/repo",
     help="Enter the public GitHub repository URL."
+)
+
+retrieval_mode = st.sidebar.selectbox(
+    "Retrieval Method",
+    options=["hybrid_rerank", "hybrid", "vector"],
+    format_func=lambda x: {
+        "vector": "Vector (Dense Embeddings only)",
+        "hybrid": "Hybrid (Dense + BM25 Search)",
+        "hybrid_rerank": "Hybrid + Cross-Encoder Rerank (Recommended)"
+    }[x],
+    help="User-side control: Change how code chunks are retrieved and ranked."
 )
 
 persist_dir = "./chroma_db"
@@ -113,24 +124,46 @@ else:
             with st.chat_message("assistant"):
                 with st.spinner("Analyzing repository code..."):
                     try:
-                        query_engine = load_engine(persist_dir)
+                        query_engine = load_engine(persist_dir, mode=retrieval_mode)
                         response = query_engine.query(prompt)
                         
                         response_text = str(response)
                         
-                        # Extract source nodes/files
-                        sources = set()
+                        # Extract source nodes/files with line ranges and construct GitHub permalinks
+                        citations = {}
+                        base_repo_url = "https://github.com"
+                        commit_sha = "main"
+                        if os.path.exists(repo_info_path):
+                            try:
+                                with open(repo_info_path, "r", encoding="utf-8") as f:
+                                    r_info = json.load(f)
+                                base_repo_url = r_info.get("repo_url", "https://github.com").rstrip("/")
+                                commit_sha = r_info.get("commit_sha", "main")
+                            except Exception:
+                                pass
+
                         if hasattr(response, "source_nodes"):
                             for node in response.source_nodes:
                                 file_path = node.node.metadata.get("file_path") or node.node.metadata.get("path")
                                 if file_path:
-                                    sources.add(file_path)
+                                    start = node.node.metadata.get("start_line")
+                                    end = node.node.metadata.get("end_line")
+                                    if file_path not in citations:
+                                        citations[file_path] = []
+                                    if start and end:
+                                        citations[file_path].append((start, end))
                         
                         full_response = response_text
-                        if sources:
-                            full_response += "\n\n**📁 Referenced Files:**\n"
-                            for src in sorted(list(sources)):
-                                full_response += f"- `{src}`\n"
+                        if citations:
+                            full_response += "\n\n**📁 Clickable Citations:**\n"
+                            for fp, ranges in sorted(citations.items()):
+                                if ranges:
+                                    start, end = ranges[0]
+                                    link = f"{base_repo_url}/blob/{commit_sha}/{fp}#L{start}-L{end}"
+                                    full_response += f"- [`{fp}:{start}-{end}`]({link})\n"
+                                else:
+                                    link = f"{base_repo_url}/blob/{commit_sha}/{fp}"
+                                    full_response += f"- [`{fp}`]({link})\n"
                                 
                         st.markdown(full_response)
                         st.session_state.messages.append({"role": "assistant", "content": full_response})
