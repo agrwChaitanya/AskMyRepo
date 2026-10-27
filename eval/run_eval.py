@@ -55,11 +55,23 @@ def ranked_files(nodes) -> list[str]:
     return files
 
 
-def score(expected: list[str], retrieved: list[str]) -> tuple[int, float]:
+def score(expected: list[str], retrieved: list[str], k: int) -> dict:
+    ret_k = retrieved[:k]
+    hit_1 = 1.0 if (ret_k and ret_k[0] in expected) else 0.0
+    hit_k = 1.0 if any(f in expected for f in ret_k) else 0.0
     ranks = [retrieved.index(f) + 1 for f in expected if f in retrieved]
-    if not ranks:
-        return 0, 0.0
-    return 1, 1.0 / min(ranks)
+    rr = 1.0 / min(ranks) if ranks else 0.0
+    precision = (len([f for f in ret_k if f in expected]) / len(ret_k)) if ret_k else 0.0
+    recall = (len([f for f in expected if f in ret_k]) / len(expected)) if expected else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    return {
+        "hit_1": hit_1,
+        "hit_k": hit_k,
+        "rr": rr,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 
 def main():
@@ -70,36 +82,44 @@ def main():
     for cfg in CONFIGS:
         print(f"\n=== {cfg['name']} ===")
         built = {}  # one retriever per repo for this config
-        hits = mrr = 0.0
+        h1 = hk = mrr = prec = rec = f1 = 0.0
 
         for q in questions:
             repo = q["repo_url"]
             if repo not in built:
-                index, nodes = load_index_and_nodes(ensure_index(repo, cfg["chunking"]))
-                built[repo] = build_retriever(index, nodes, mode=cfg["mode"], top_k=TOP_K)
+                persist_path = ensure_index(repo, cfg["chunking"])
+                index, nodes = load_index_and_nodes(persist_path)
+                built[repo] = build_retriever(index, nodes, mode=cfg["mode"], top_k=TOP_K, persist_dir=persist_path)
             retriever, post = built[repo]
 
             files = ranked_files(retrieve(q["question"], retriever, post))
-            hit, rr = score(q["expected_files"], files)
-            hits += hit
-            mrr += rr
+            s = score(q["expected_files"], files, TOP_K)
+            h1 += s["hit_1"]
+            hk += s["hit_k"]
+            mrr += s["rr"]
+            prec += s["precision"]
+            rec += s["recall"]
+            f1 += s["f1"]
+
             per_question.append({
                 "config": cfg["name"], "repo": repo, "type": q.get("type", ""),
-                "question": q["question"], "hit": hit, "rr": round(rr, 3),
+                "question": q["question"], "hit_1": int(s["hit_1"]), "hit_k": int(s["hit_k"]),
+                "rr": round(s["rr"], 3), "precision": round(s["precision"], 3),
+                "recall": round(s["recall"], 3), "f1": round(s["f1"], 3),
                 "expected": "; ".join(q["expected_files"]), "retrieved": "; ".join(files),
             })
             time.sleep(0.2)  # be gentle with free-tier rate limits
 
         n = len(questions)
-        summary.append((cfg["name"], hits / n, mrr / n))
+        summary.append((cfg["name"], h1 / n, hk / n, mrr / n, prec / n, rec / n, f1 / n))
 
-    print(f"\n{'Config':42} {'hit@' + str(TOP_K):>8} {'MRR':>8}")
-    print("-" * 60)
-    for name, h, m in summary:
-        print(f"{name:42} {h:8.1%} {m:8.3f}")
+    print(f"\n{'Config':38} {'Hit@1':>7} {'Hit@' + str(TOP_K):>7} {'MRR':>7} {'Prec':>7} {'Rec':>7} {'F1':>7}")
+    print("-" * 88)
+    for name, h1_val, hk_val, m, p, r, f in summary:
+        print(f"{name:38} {h1_val:7.1%} {hk_val:7.1%} {m:7.3f} {p:7.1%} {r:7.1%} {f:7.3f}")
 
     out = ROOT / "results_per_question.csv"
-    with out.open("w", newline="") as f:
+    with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(per_question[0].keys()))
         writer.writeheader()
         writer.writerows(per_question)

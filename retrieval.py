@@ -34,6 +34,11 @@ def build_retriever(index, nodes, mode: str = "hybrid_rerank", top_k: int = 5, c
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
 
+    corpus_size = len(nodes) if nodes else 0
+    if corpus_size > 0:
+        top_k = min(top_k, corpus_size)
+        candidates = min(candidates, corpus_size)
+
     if mode == "vector":
         return VectorIndexRetriever(index=index, similarity_top_k=top_k), []
 
@@ -41,9 +46,10 @@ def build_retriever(index, nodes, mode: str = "hybrid_rerank", top_k: int = 5, c
     
     try:
         bm25 = BM25Retriever.from_persist_dir(persist_dir)
-        bm25.similarity_top_k = candidates
     except Exception:
-        bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=candidates)
+        bm25 = BM25Retriever.from_defaults(nodes=nodes)
+    
+    bm25.similarity_top_k = candidates
 
     rerank = mode == "hybrid_rerank"
     fusion = QueryFusionRetriever(
